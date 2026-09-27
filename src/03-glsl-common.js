@@ -209,6 +209,60 @@ void main(){
   o = vec4(uBg + glow*(1. - 0.6*m) + cd.rgb*m, 1.);
 }`;
 
+// ---------------------------------------------------------------- the film look: the scene at (near) screen resolution, bloom and a filmic tone map instead of glyphs
+// bloom: a chain of half-size mips, filtered down (13 taps) and back up (tent), each level adding a wider halo
+const FS_BLOOM_DOWN = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uTexel; uniform vec2 uRes; uniform float uFirst; uniform float uIn;
+out vec4 o;
+vec3 s(vec2 uv){ vec3 x = texture(uSrc, uv).rgb; return uFirst > 0.5 ? min(x*uIn, vec3(40.)) : x; }
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes, t = uTexel;
+  vec3 a = s(uv + t*vec2(-2, 2)), b = s(uv + t*vec2(0, 2)), c = s(uv + t*vec2(2, 2));
+  vec3 d = s(uv + t*vec2(-2, 0)), e = s(uv), f = s(uv + t*vec2(2, 0));
+  vec3 g = s(uv + t*vec2(-2, -2)), h = s(uv + t*vec2(0, -2)), i = s(uv + t*vec2(2, -2));
+  vec3 j = s(uv + t*vec2(-1, 1)), k = s(uv + t*vec2(1, 1)), l = s(uv + t*vec2(-1, -1)), m = s(uv + t*vec2(1, -1));
+  o = vec4(e*0.125 + (a + c + g + i)*0.03125 + (b + d + f + h)*0.0625 + (j + k + l + m)*0.125, 1.);
+}`;
+const FS_BLOOM_UP = `#version 300 es
+precision highp float;
+uniform sampler2D uSrc; uniform vec2 uTexel; uniform vec2 uRes;
+out vec4 o;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uRes, t = uTexel;
+  vec3 x = texture(uSrc, uv).rgb*4.;
+  x += (texture(uSrc, uv + vec2(t.x, 0.)).rgb + texture(uSrc, uv - vec2(t.x, 0.)).rgb + texture(uSrc, uv + vec2(0., t.y)).rgb + texture(uSrc, uv - vec2(0., t.y)).rgb)*2.;
+  x += texture(uSrc, uv + t).rgb + texture(uSrc, uv - t).rgb + texture(uSrc, uv + vec2(t.x, -t.y)).rgb + texture(uSrc, uv + vec2(-t.x, t.y)).rgb;
+  o = vec4(x/16., 1.);
+}`;
+// composite: scene + bloom, tone map that keeps hues saturated and lifts faint gas (as the glyphs did), a touch of lens and grain
+const FS_FILM = `#version 300 es
+precision highp float;
+uniform sampler2D uScene; uniform sampler2D uBloom; uniform vec2 uView; uniform vec2 uTexel; uniform float uIn; uniform float uBloomAmt; uniform float uT; uniform vec3 uBg;
+out vec4 o;
+float h21(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y)*p3.z); }
+void main(){
+  vec2 uv = gl_FragCoord.xy/uView, q = uv - 0.5;
+  // a faint chromatic fringe towards the edges
+  vec2 ca = q*dot(q, q)*uTexel*6.;
+  vec4 sc = texture(uScene, uv);
+  vec3 x = vec3(texture(uScene, uv + ca).r, sc.g, texture(uScene, uv - ca).b)*uIn;
+  vec3 bl = texture(uBloom, uv).rgb;
+  // an opaque, unlit pixel (a black hole's shadow, a night side) takes no bloom: shadows stay pitch black
+  float vd = step(0.985, sc.a)*(1. - smoothstep(0.002, 0.03, max(x.r, max(x.g, x.b))));
+  x = mix(x, bl, uBloomAmt*(1. - vd)) + bl*uBloomAmt*0.6*(1. - vd);
+  float mx = max(x.r, max(x.g, x.b));
+  float m = 1. - exp(-mx*1.15);
+  m = pow(m, 0.78);
+  vec3 col = x/max(mx, 1e-5)*m;
+  // very bright light burns towards white, as on film
+  col = mix(col, vec3(m), smoothstep(0.55, 1., m)*0.55);
+  col *= 1. - 0.28*dot(q, q)*2.;
+  col = uBg*(1. - m) + col;
+  col += (h21(gl_FragCoord.xy + fract(uT*7.3)*97.) - 0.5)*(1.5/255. + 0.012*(1. - m));
+  o = vec4(col, 1.);
+}`;
+
 // ---------------------------------------------------------------- particles
 function particleVS(body){ return `#version 300 es
 layout(location=0) in vec4 aP;
@@ -216,6 +270,7 @@ layout(location=1) in vec4 aC;
 uniform mat3 uCamRot; uniform vec2 uTan; uniform vec3 uRel; uniform mat3 uRot; uniform float uRad; uniform float uVis;
 uniform float uPixAng; uniform float uMode; uniform float uN; uniform float uSB; uniform float uSize; uniform float uOut; uniform float uT;
 uniform vec4 uQ0; uniform vec4 uQ1; uniform mat3 uM; uniform float uCap;
+uniform vec2 uPtK;   // point size and brightness factors for the scene resolution (1, 1 on the character grid)
 uniform vec4 uHole;   // the black hole with the biggest shadow on screen: position (camera-relative) and shadow radius (2.6 r_s), w = 0 when none
 out vec3 vC;
 float pSize = 0.;     // optional, set by body(): the radius each point stands for (object units), so a sparse cloud still reads as a surface at any zoom
@@ -235,7 +290,7 @@ void main(){
   else if(uMode < 2.5){ size = clamp(uSize*uRad/(v.z*uPixAng), 1.5, 9.); b = min(uSB/(v.z*v.z), 2.5); }
   else { size = uSize; b = uSB; }
   if(pSize > 0.) size = clamp(pSize*uRad/(v.z*uPixAng), size, 14.);
-  gl_PointSize = size; vC = col*br*b*uOut*uVis;
+  gl_PointSize = size*uPtK.x; vC = col*br*b*uOut*uVis*uPtK.y;
 }`; }
 const FS_POINT = `#version 300 es
 precision mediump float;
@@ -245,7 +300,7 @@ void main(){ vec2 q = gl_PointCoord*2. - 1.; float r2 = dot(q,q); if(r2 > 1.) di
 // soothing flight drift: soft motes wrapped in a camera-centred cube whose size follows the view scale
 const VS_DRIFT = `#version 300 es
 layout(location=0) in vec4 aP; layout(location=1) in vec4 aC;
-uniform mat3 uCamRot; uniform vec2 uTan; uniform vec3 uDrift; uniform vec3 uVel; uniform float uZoom; uniform float uScale; uniform float uAmt; uniform float uOut; uniform float uPt;
+uniform mat3 uCamRot; uniform vec2 uTan; uniform vec3 uDrift; uniform vec3 uVel; uniform float uZoom; uniform float uScale; uniform float uAmt; uniform float uOut; uniform float uPt; uniform vec2 uPtK;
 out vec3 vC;
 void main(){
   vec3 q = fract(aP.xyz - uDrift) - 0.5;
@@ -255,9 +310,9 @@ void main(){
   float r = length(q);
   gl_Position = vec4(v.x/uTan.x, v.y/uTan.y, 0., v.z);
   if(vn.z < 0.01*uScale || v.z < 0.01*uScale){ gl_PointSize = 1.; vC = vec3(0.); return; }
-  gl_PointSize = uPt;
+  gl_PointSize = uPt*uPtK.x;
   float fade = smoothstep(0.5, 0.3, r)*smoothstep(0.04, 0.14, r);
-  vC = aC.rgb*aP.w*uAmt*uOut*fade*(tail ? 0. : 1.);
+  vC = aC.rgb*aP.w*uAmt*uOut*fade*(tail ? 0. : uPtK.y);
 }`;
 const FS_LINE = `#version 300 es
 precision mediump float;

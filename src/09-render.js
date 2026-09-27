@@ -3,22 +3,33 @@
 const DETAIL = [{name:'ultra', w:4}, {name:'fine', w:5}, {name:'normal', w:6.5}, {name:'bold', w:9}];
 let detailIdx = clamp(SET.detail | 0, 0, DETAIL.length - 1), glowOn = SET.glow, labelsOn = SET.labels;
 let dpr = 1, cellW = 6, cellH = 11, cols = 1, rows = 1, sceneW = 2, sceneH = 2;
+// the film look (FLAGS.film): the scene renders at screen resolution (one pixel per FILM_PX[detail] CSS pixels) and is shown directly, with bloom.
+// Visibility thresholds, levels of detail and point sizes are authored for the character grid, so they keep using its resolution (refH, via uPtK)
+const FILM_PX = [1, 1.25, 1.6, 2.2];
+let filmOn = FLAGS.film && SET.look === 'film', refH = 2, ptK = [1, 1];
 let tanY = Math.tan(cam.fovY/2), tanX = tanY, viewWcss = 1, viewHcss = 1, canvasHcss = 1;
 let RT = null, viewFit = 1, LODK = 1, afterFrame = null;   // afterFrame: run once right after the next frame is drawn   // LODK: ray-march step budget, lowered automatically on slow devices
-function freeRT(){ if (!RT) return; for (const k of ['sceneTex','cellTex','glowA','glowB']) gl.deleteTexture(RT[k]); for (const k of ['sceneFBO','cellFBO','glowFA','glowFB']) gl.deleteFramebuffer(RT[k]); }
+function freeRT(){ if (!RT) return; for (const k of ['sceneTex','cellTex','glowA','glowB']) gl.deleteTexture(RT[k]); for (const k of ['sceneFBO','cellFBO','glowFA','glowFB']) gl.deleteFramebuffer(RT[k]); for (const m of RT.bloom){ gl.deleteTexture(m.tex); gl.deleteFramebuffer(m.fbo); } }
 function resize(){
   dpr = Math.min(devicePixelRatio || 1, 2);
   const cssW = canvas.clientWidth || innerWidth, cssH = canvas.clientHeight || innerHeight;
   canvas.width = Math.max(1, Math.round(cssW*dpr)); canvas.height = Math.max(1, Math.round(cssH*dpr));
   cellW = Math.max(3, Math.round(DETAIL[detailIdx].w*dpr)); cellH = Math.round(cellW*1.8);
   cols = Math.ceil(canvas.width/cellW); rows = Math.ceil(canvas.height/cellH);
-  sceneW = cols*2; sceneH = rows*2;
+  sceneW = cols*2; sceneH = rows*2; refH = sceneH;
+  if (filmOn){ const px = FILM_PX[detailIdx]*dpr; sceneW = Math.ceil(cols*cellW/px); sceneH = Math.ceil(rows*cellH/px); }
+  // points grow less than the resolution (crisper stars) and brighten to keep their total light
+  const k = sceneH/refH, ks = Math.pow(k, 0.55); ptK = [ks, (k*k)/(ks*ks)];
   freeRT();
   const sceneTex = makeTex(sceneW, sceneH, HDR ? gl.RGBA16F : gl.RGBA8, gl.RGBA, HDR ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, gl.LINEAR);
   const cellTex = makeTex(cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.NEAREST);
   const glowA = makeTex(cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
   const glowB = makeTex(cols, rows, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR);
-  RT = { sceneTex, cellTex, glowA, glowB, sceneFBO:makeFBO(sceneTex), cellFBO:makeFBO(cellTex), glowFA:makeFBO(glowA), glowFB:makeFBO(glowB) };
+  RT = { sceneTex, cellTex, glowA, glowB, sceneFBO:makeFBO(sceneTex), cellFBO:makeFBO(cellTex), glowFA:makeFBO(glowA), glowFB:makeFBO(glowB), bloom:[] };
+  if (filmOn) for (let w = sceneW >> 1, h = sceneH >> 1; RT.bloom.length < 6 && w >= 4 && h >= 4; w >>= 1, h >>= 1){
+    const tex = makeTex(w, h, HDR ? gl.RGBA16F : gl.RGBA8, gl.RGBA, HDR ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE, gl.LINEAR);
+    RT.bloom.push({ tex, fbo:makeFBO(tex), w, h });
+  }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   buildAtlas(cellW, cellH);
   canvasHcss = cssH; viewWcss = cols*cellW/dpr; viewHcss = rows*cellH/dpr;
@@ -26,8 +37,9 @@ function resize(){
   cam.fovY = Math.max(55*DEG, 2*Math.atan(Math.tan(25*DEG)/aspect));
   viewFit = aspect < 0.8 ? 1.2 : 1;
   tanY = Math.tan(cam.fovY/2); tanX = tanY*aspect;
-  const di = $('#detailInfo'); if (di) di.textContent = `${cols} x ${rows} characters`;
+  const di = $('#detailInfo'); if (di) di.textContent = detailTxt();
 }
+const detailTxt = () => filmOn ? `${sceneW} x ${sceneH} pixels` : `${cols} x ${rows} characters`;
 
 // ================================================================ drawing
 const I3 = M3.I();
@@ -73,8 +85,8 @@ function drawVolume(o, pr, rel, radius, setU, rot, vis = 1){
   gl.uniform3fv(pr.u.uCamLocal, M3.applyT(R, V.mul(rel, -1/radius)));
   gl.uniform4f(pr.u.uRect, rect[0], rect[1], rect[2], rect[3]);
   gl.uniform1f(pr.u.uVis, vis);
-  const rpx = radius/Math.max(dist - radius*0.5, radius*1e-3)/tanY*sceneH*0.5;
-  gl.uniform1f(pr.u.uLod, clamp(rpx/(sceneH*0.3), 0.3, 1)*LODK);
+  const rpx = radius/Math.max(dist - radius*0.5, radius*1e-3)/tanY*refH*0.5;
+  gl.uniform1f(pr.u.uLod, clamp(rpx/(refH*0.3), 0.3, 1)*LODK);
   setU && setU(pr);
   drawQuad();
   return true;
@@ -86,7 +98,7 @@ function drawParticles(o, s, vis = 1){
   const rel = s.rel ? s.rel() : (o ? o.rel : [0,0,0]), rad = s.rad || (o ? o.rad : 1);
   gl.uniformMatrix3fv(pr.u.uCamRot, false, camRot); gl.uniform2f(pr.u.uTan, tanX, tanY);
   gl.uniform3fv(pr.u.uRel, rel); gl.uniformMatrix3fv(pr.u.uRot, false, s.rot ? s.rot() : (o ? o.rot : I3)); gl.uniform1f(pr.u.uRad, rad);
-  gl.uniform1f(pr.u.uPixAng, 2*tanY/sceneH); gl.uniform1f(pr.u.uMode, s.mode); gl.uniform1f(pr.u.uN, s.ps.count);
+  gl.uniform1f(pr.u.uPixAng, 2*tanY/refH); gl.uniform2f(pr.u.uPtK, ptK[0], ptK[1]); gl.uniform1f(pr.u.uMode, s.mode); gl.uniform1f(pr.u.uN, s.ps.count);
   gl.uniform1f(pr.u.uSB, s.mode === 1 || s.mode === 2 ? s.sb*rad*rad : s.sb); gl.uniform1f(pr.u.uSize, s.size); gl.uniform1f(pr.u.uCap, s.cap || 2);
   gl.uniform1f(pr.u.uOut, OUT); gl.uniform1f(pr.u.uT, o ? o.t : 0); gl.uniform1f(pr.u.uVis, vis*(s.vis ? s.vis() : 1));
   if (s.q0) gl.uniform4fv(pr.u.uQ0, s.q0());
@@ -137,7 +149,7 @@ function drawDrift(){
     gl.useProgram(pr.p);
     gl.uniformMatrix3fv(pr.u.uCamRot, false, camRot); gl.uniform2f(pr.u.uTan, tanX, tanY);
     gl.uniform3fv(pr.u.uDrift, DR.off.map(x => x - Math.floor(x))); gl.uniform3fv(pr.u.uVel, DR.vel); gl.uniform1f(pr.u.uZoom, clamp(DR.zoom, -0.4, 0.4));
-    gl.uniform1f(pr.u.uScale, DR.scale); gl.uniform1f(pr.u.uAmt, DR.amt*(prim === gl.LINES ? 0.35 : 0.9)); gl.uniform1f(pr.u.uOut, OUT); gl.uniform1f(pr.u.uPt, 2.2);
+    gl.uniform1f(pr.u.uScale, DR.scale); gl.uniform1f(pr.u.uAmt, DR.amt*(prim === gl.LINES ? 0.35 : 0.9)); gl.uniform1f(pr.u.uOut, OUT); gl.uniform1f(pr.u.uPt, 2.2); gl.uniform2f(pr.u.uPtK, ptK[0], ptK[1]);
     gl.bindVertexArray(drift.vao); gl.drawArrays(prim, 0, drift.count);
   }
 }
@@ -202,7 +214,7 @@ function render(){
   gl.useProgram(P.bg.p); setCommon(P.bg, null); gl.uniform4f(P.bg.u.uRect, -1, -1, 1, 1); drawQuad();
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
   drawDrift();
-  const pxK = sceneH*0.5/tanY;
+  const pxK = refH*0.5/tanY;
   let ni = 0;
   const order = OBJ.slice().sort((a, b) => a.layer - b.layer || b.dist - a.dist);
   for (const o of order){
@@ -247,6 +259,7 @@ function render(){
   gl.uniform1f(pr.u.uLv, atlas.levels); gl.uniform1f(pr.u.uDir0, atlas.dir0); gl.uniform1f(pr.u.uEdge, 1); gl.uniform4f(pr.u.uRect, -1, -1, 1, 1);
   gl.uniform1f(pr.u.uT, GT); gl.uniform1f(pr.u.uDith, 1);
   drawQuad();
+  if (filmOn && progReady(P.bloomDown) && progReady(P.bloomUp) && progReady(P.film)){ drawFilm(); return; }
   if (glowOn){
     pr = P.glow; gl.useProgram(pr.p);
     gl.uniform2f(pr.u.uGrid, cols, rows); gl.uniform1f(pr.u.uExp, 1.0); gl.uniform1f(pr.u.uIn, 1/OUT); gl.uniform4f(pr.u.uRect, -1, -1, 1, 1);
@@ -265,7 +278,38 @@ function render(){
   gl.uniform2f(pr.u.uCell, cellW, cellH); gl.uniform2f(pr.u.uGrid, cols, rows); gl.uniform1f(pr.u.uAtlasN, atlas.count);
   gl.uniform1f(pr.u.uGlowAmt, glowOn ? 0.16 : 0); gl.uniform3f(pr.u.uBg, 0.012, 0.014, 0.026); gl.uniform4f(pr.u.uRect, -1, -1, 1, 1);
   drawQuad();
-  if (afterFrame){ const f = afterFrame; afterFrame = null; try { f(); } catch (e) { console.warn(e); } }
+  frameDone();
+}
+function frameDone(){ if (afterFrame){ const f = afterFrame; afterFrame = null; try { f(); } catch (e) { console.warn(e); } } }
+function drawFilm(){
+  const B = RT.bloom;
+  let pr = P.bloomDown; gl.useProgram(pr.p); gl.uniform4f(pr.u.uRect, -1, -1, 1, 1); gl.uniform1f(pr.u.uIn, 1/OUT); gl.uniform1i(pr.u.uSrc, 1);
+  gl.activeTexture(gl.TEXTURE1);
+  for (let i = 0; i < B.length; i++){
+    const src = i ? B[i - 1] : { tex:RT.sceneTex, w:sceneW, h:sceneH };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, B[i].fbo); gl.viewport(0, 0, B[i].w, B[i].h);
+    gl.bindTexture(gl.TEXTURE_2D, src.tex);
+    gl.uniform2f(pr.u.uTexel, 1/src.w, 1/src.h); gl.uniform2f(pr.u.uRes, B[i].w, B[i].h); gl.uniform1f(pr.u.uFirst, i ? 0 : 1);
+    drawQuad();
+  }
+  pr = P.bloomUp; gl.useProgram(pr.p); gl.uniform4f(pr.u.uRect, -1, -1, 1, 1); gl.uniform1i(pr.u.uSrc, 1);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);
+  for (let i = B.length - 1; i > 0; i--){
+    gl.bindFramebuffer(gl.FRAMEBUFFER, B[i - 1].fbo); gl.viewport(0, 0, B[i - 1].w, B[i - 1].h);
+    gl.bindTexture(gl.TEXTURE_2D, B[i].tex);
+    gl.uniform2f(pr.u.uTexel, 1/B[i].w, 1/B[i].h); gl.uniform2f(pr.u.uRes, B[i - 1].w, B[i - 1].h);
+    drawQuad();
+  }
+  gl.disable(gl.BLEND);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height);
+  pr = P.film; gl.useProgram(pr.p); gl.uniform4f(pr.u.uRect, -1, -1, 1, 1);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, RT.sceneTex); gl.uniform1i(pr.u.uScene, 1);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, B.length ? B[0].tex : RT.sceneTex); gl.uniform1i(pr.u.uBloom, 2);
+  gl.uniform2f(pr.u.uView, cols*cellW, rows*cellH); gl.uniform2f(pr.u.uTexel, 1/sceneW, 1/sceneH);
+  gl.uniform1f(pr.u.uIn, 1/OUT); gl.uniform1f(pr.u.uBloomAmt, glowOn && B.length ? 0.1/B.length : 0);
+  gl.uniform1f(pr.u.uT, GT); gl.uniform3f(pr.u.uBg, 0.012, 0.014, 0.026);
+  drawQuad();
+  frameDone();
 }
 
 // ================================================================ HUD
@@ -625,18 +669,20 @@ shipArrowEl.addEventListener('click', followShip);
 
 // ---------------------------------------------------------------- settings
 function syncSettingsUI(){
-  const v = { detail:String(detailIdx), travel:SET.travel, time:String(timeScale), dwell:SET.dwell, musicStyle:SET.musicStyle, saverIdle:String(SET.saverIdle), fadeUI:SET.fadeUI };
+  const v = { look:SET.look, detail:String(detailIdx), travel:SET.travel, time:String(timeScale), dwell:SET.dwell, musicStyle:SET.musicStyle, saverIdle:String(SET.saverIdle), fadeUI:SET.fadeUI };
   document.querySelectorAll('.seg[data-key]').forEach(seg => { const k = seg.dataset.key; seg.querySelectorAll('button').forEach(b => b.setAttribute('aria-checked', String(b.dataset.v === v[k]))); });
   settingsEl.querySelectorAll('.tog button').forEach(b => b.setAttribute('aria-pressed', String(!!SET[b.dataset.key])));
   $('#volume').value = SET.volume;
   $('#btnSound').setAttribute('aria-pressed', String(SET.sound)); $('#btnSound').textContent = SET.sound ? 'sound' : (isCompact() ? 'muted' : 'sound off');
   $('#textSize').value = SET.textSize; $('#tsTxt').textContent = Math.round(SET.textSize*100) + '%';
   $('#menuSize').value = SET.menuSize; $('#msTxt').textContent = Math.round(SET.menuSize*100) + '%';
-  $('#detailInfo').textContent = `${cols} x ${rows} characters`;
+  $('#detailInfo').textContent = detailTxt();
+  const lk = $('#lookOpt'); if (lk) lk.hidden = !FLAGS.film;
 }
 function setOpt(key, v, quiet){
   switch (key){
-    case 'detail': detailIdx = SET.detail = clamp(v | 0, 0, DETAIL.length - 1); adaptCount = 0; resize(); if (!quiet) toast(`detail: ${DETAIL[detailIdx].name} (${cols} x ${rows} characters)`); break;
+    case 'detail': detailIdx = SET.detail = clamp(v | 0, 0, DETAIL.length - 1); adaptCount = 0; resize(); if (!quiet) toast(`detail: ${DETAIL[detailIdx].name} (${detailTxt()})`); break;
+    case 'look': SET.look = v === 'ascii' ? 'ascii' : 'film'; filmOn = FLAGS.film && SET.look === 'film'; resize(); if (!quiet) toast('look: ' + SET.look); break;
     case 'travel': SET.travel = v; retimeFlight(); if (!quiet) toast('travel: ' + v + (v === 'warp' ? ' · near-instant' : v === 'cinematic' ? ' · slow and scenic' : '')); break;
     case 'time': timeScale = +v; if (!quiet) toast(timeScale ? 'time ' + timeScale + 'x' : 'time paused'); break;
     case 'glow': SET.glow = glowOn = !!v; break;

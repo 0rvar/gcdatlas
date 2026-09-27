@@ -4,6 +4,9 @@ All notable changes, newest first. Dates are UTC.
 
 ## Unreleased
 
+**New (behind the `film` flag)**
+- A film look: the same scene drawn as a picture at screen resolution instead of characters, with soft bloom, a filmic tone map, a faint colour fringe towards the edges and light grain. Turn it on with `?flags=film`; settings then offer *look: ascii / film*. Detail sets the pixel size (1 to 2.2 CSS pixels).
+
 ## 0.7.9 · 2026-09-26
 
 **New**

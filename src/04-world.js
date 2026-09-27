@@ -10,7 +10,7 @@ const COMPACT_MQ = matchMedia('(max-width:680px), (max-height:520px) and (max-wi
 const isCompact = () => COMPACT_MQ.matches;
 // user settings, remembered between visits when the browser allows it
 const SET = (() => {
-  const d = { detail:1, travel:reduceMotion ? 'quick' : 'cinematic', glow:true, labels:true, twinkle:true, haloMark:false, menuSize:1.15, sound:true, volume:0.55, dwell:'normal', textSize:1, musicStyle:'mix', saverIdle:0, fadeUI:'quick', infoD:'full', infoM:'compact' };
+  const d = { detail:1, travel:reduceMotion ? 'quick' : 'cinematic', glow:true, labels:true, twinkle:true, haloMark:false, menuSize:1.15, sound:true, volume:0.55, dwell:'normal', textSize:1, musicStyle:'mix', saverIdle:0, fadeUI:'quick', infoD:'full', infoM:'compact', look:'film' };
   try { const s = JSON.parse(localStorage.getItem('gcdatlas.settings') || '{}'); for (const k in d) if (k in s && typeof s[k] === typeof d[k]) d[k] = s[k]; } catch (e) {}
   return d;
 })();
@@ -18,7 +18,7 @@ const SET = (() => {
 // Override per visitor with ?flags=name,-other in the URL (for that visit only) or localStorage 'gcdatlas.flags'. See docs/FEATURE_FLAGS.md.
 // (a link someone else shares must not change your settings for good, so URL flags are not saved; only known flag names count)
 const FLAGS = (() => {
-  const f = { live:true, launches:true, planes:true, backyard:true, earthStory:true, social:false };
+  const f = { live:true, launches:true, planes:true, backyard:true, earthStory:true, social:false, film:false };
   try { const saved = JSON.parse(localStorage.getItem('gcdatlas.flags') || '{}'); for (const k of Object.keys(f)) if (typeof saved[k] === 'boolean') f[k] = saved[k]; } catch (e) {}
   const q = new URLSearchParams(location.search).get('flags');
   if (q){ for (const s of q.split(',')){ const k = s.replace(/^[-+]/, ''); if (Object.hasOwn(f, k)) f[k] = !s.startsWith('-'); } }
@@ -140,7 +140,7 @@ void main(){
 // apparent brightness follows the true inverse-square law, then a perceptual curve so both Sirius and 5th-magnitude stars read
 const VS_CATSTAR = `#version 300 es
 layout(location=0) in vec4 aP; layout(location=1) in vec4 aC;
-uniform mat3 uCamRot; uniform vec2 uTan; uniform vec3 uRel; uniform mat3 uRot; uniform float uRad; uniform float uVis; uniform float uOut; uniform vec4 uQ0;
+uniform mat3 uCamRot; uniform vec2 uTan; uniform vec3 uRel; uniform mat3 uRot; uniform float uRad; uniform float uVis; uniform float uOut; uniform vec4 uQ0; uniform vec2 uPtK;
 out vec3 vC;
 void main(){
   vec3 v = (uRel + uRot*(aP.xyz*uRad))*uCamRot;
@@ -155,14 +155,17 @@ void main(){
   float tw = sin(t*(0.5 + 1.3*h1) + h2*6.283)*0.5 + sin(t*(1.7 + 2.3*h2) + h3*6.283)*0.25 + sin(t*(0.11 + 0.23*h3) + h1*6.283)*0.4;
   float glint = pow(max(sin(t*(0.031 + 0.05*h3) + h1*97.), 0.), 60.);
   b *= max(1. + uQ0.w*(0.2*tw + 1.4*glint), 0.2);
-  gl_PointSize = clamp(1.3 + 0.55*log(1. + f*6.) + uQ0.w*glint, 1.3, 4.2);
-  vC = mix(aC.rgb, vec3(0.85, 0.92, 1.), 0.3*glint*uQ0.w)*b*uOut*uVis*smoothstep(0.004, 0.02, b);
+  gl_PointSize = clamp(1.3 + 0.55*log(1. + f*6.) + uQ0.w*glint, 1.3, 4.2)*uPtK.x;
+  vC = mix(aC.rgb, vec3(0.85, 0.92, 1.), 0.3*glint*uQ0.w)*b*uOut*uVis*smoothstep(0.004, 0.02, b)*uPtK.y;
 }`;
 const P = {
   bg: program(VS_RECT, FS_BG, true),
   cell: program(VS_RECT, FS_CELL, true),
   glow: program(VS_RECT, FS_GLOW, true),
   final: program(VS_RECT, FS_FINAL, true),
+  bloomDown: program(VS_RECT, FS_BLOOM_DOWN),
+  bloomUp: program(VS_RECT, FS_BLOOM_UP),
+  film: program(VS_RECT, FS_FILM),
   ptBasic: program(particleVS(PB_BASIC), FS_POINT),
   lnBasic: program(particleVS(PB_BASIC), FS_LINE),
   spike: program(VS_SPIKE, FS_LINE),

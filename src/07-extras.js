@@ -344,7 +344,7 @@ EXTRAS.push(() => {
   if (SKYV.on) return;
   const S = sun, d = S.dist;
   if (!S.hidden && d > 0 && V.dot(S.rel, cam.fwd) > 0){
-    const rpxS = coreOf(S)*magOf(S)/d*(sceneH*0.5/tanY);
+    const rpxS = coreOf(S)*magOf(S)/d*(refH*0.5/tanY);
     glare(S, (1 - smooth(12, 45, rpxS))*(1 - smooth(60*AU_LY, 600*AU_LY, d))*(1 - SYSMAG.k)*(S.occ ?? 1), 1);
   }
   const B = alphaCenB;

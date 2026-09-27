@@ -128,6 +128,12 @@
 
 <aside id="settings" class="panel" aria-label="Settings" hidden>
   <div class="panel-head"><span class="ptitle">settings</span><button class="btn" id="settingsHelp">help</button><button class="btn" id="settingsClose">close</button></div>
+  <div class="opt" id="lookOpt" hidden>
+    <div class="opt-l">look <span class="opt-note">characters, or a rendered picture (experimental)</span></div>
+    <div class="seg" data-key="look" role="radiogroup" aria-label="Look">
+      <button data-v="ascii" role="radio">ascii</button><button data-v="film" role="radio">film</button>
+    </div>
+  </div>
   <div class="opt">
     <div class="opt-l">detail <span id="detailInfo" class="opt-note"></span></div>
     <div class="seg" data-key="detail" role="radiogroup" aria-label="Detail">

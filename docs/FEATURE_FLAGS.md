@@ -20,6 +20,7 @@ const FLAGS = (() => {
 | `planes` | on | illustrative air traffic near Earth |
 | `backyard` | on | *your sky* (planetarium) |
 | `earthStory` | on | *Earth's story* |
+| `film` | off | the *look* setting: draw the scene as a picture with bloom instead of characters (`src/09-render.js`, `FS_FILM` in `src/03-glsl-common.js`) |
 | `social` | off | reserved for comments / likes / listings (not built yet) |
 
 ## Turning a flag on or off for yourself
